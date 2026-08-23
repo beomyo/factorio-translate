@@ -1,0 +1,24 @@
+{
+    "MODS_DIR": "C:\\Users\\Administrator\\AppData\\Roaming\\Factorio\\mods",
+    "TARGET_MOD_NAME": "zzzz-beomyo-fix",
+    "EXTRA_CFG_NAMES": [
+        "beomyo",
+        "beomyofix",
+        "beomyo_mod_info"
+    ],
+    "OPENAI_BASE_URL": "https://llm-ijcj80e06g322wkn.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "OPENAI_API_KEY": "sk-a10c3a06bb64666666666",
+    "MODEL": "qwen3.7-flash-2026-07-15",
+    "TRANSLATION_MAP": [
+        [
+            "阿巴卡伊巴",
+            "骸殖星"
+        ],
+        [
+            "努瓦斯",
+            "新地星"
+        ]
+    ],
+    "AUTO_TRANSLATE": true,
+    "KEEP_TEMP_FILES": true
+}
