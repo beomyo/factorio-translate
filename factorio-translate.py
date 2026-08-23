@@ -30,7 +30,11 @@ DEFAULT_CONFIG = {
 }
 
 # ========== 常量 ==========
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# In a PyInstaller one-file build, ``__file__`` points into the temporary
+# extraction directory.  Keep user settings next to the executable instead.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(
+    sys.executable if getattr(sys, 'frozen', False) else __file__
+))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 OUTPUT_DIR_MISSING = os.path.join(SCRIPT_DIR, "missing_locale")
 OUTPUT_DIR_TRANSLATE = os.path.join(SCRIPT_DIR, "missing_locale_translate")
