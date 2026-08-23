@@ -1,4 +1,4 @@
-# Mod 全自动翻译脚本
+# Factorio 异星工厂 Mod 全自动翻译脚本
 
 可以找点免费api，比如 https://bailian.console.aliyun.com/cn-beijing?tab=costing-balance#/costing-balance/free-quota
 
