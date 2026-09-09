@@ -9,7 +9,6 @@ import json
 import shutil
 import zipfile
 import tempfile
-import subprocess
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -187,13 +186,47 @@ class ModTranslator:
         else:
             try:
                 with zipfile.ZipFile(mod_path, 'r') as zf:
-                    for member in zf.namelist():
-                        parts = member.split('/')
-                        if parts and parts[0]:
+                    names = [name.replace('\\', '/') for name in zf.namelist()]
+                    # Prefer the directory containing info.json. A ZIP may
+                    # start with a top-level file, so using the first member
+                    # as the root can point at the wrong path.
+                    for name in names:
+                        parts = [part for part in name.split('/') if part]
+                        if (len(parts) >= 2 and
+                                parts[-1].casefold() == 'info.json'):
+                            return parts[0]
+                    for name in names:
+                        parts = [part for part in name.split('/') if part]
+                        if len(parts) >= 2:
                             return parts[0]
             except:
                 pass
         return None
+
+    def extract_zip_safely(self, zf, destination: str):
+        """Extract regular ZIP members without allowing paths outside destination."""
+        destination = os.path.abspath(destination)
+        os.makedirs(destination, exist_ok=True)
+
+        for member in zf.infolist():
+            name = member.filename.replace('\\', '/')
+            parts = [part for part in name.split('/') if part not in ('', '.')]
+            if not parts or any(part == '..' for part in parts) or os.path.isabs(name):
+                raise ValueError(f"ZIP 中包含非法路径: {member.filename}")
+            if re.match(r'^[A-Za-z]:', name):
+                raise ValueError(f"ZIP 中包含绝对路径: {member.filename}")
+
+            member_path = os.path.abspath(os.path.join(destination, *parts))
+            if os.path.commonpath([destination, member_path]) != destination:
+                raise ValueError(f"ZIP 路径超出临时目录: {member.filename}")
+
+            if member.is_dir() or name.endswith('/'):
+                os.makedirs(member_path, exist_ok=True)
+                continue
+
+            os.makedirs(os.path.dirname(member_path), exist_ok=True)
+            with zf.open(member, 'r') as source, open(member_path, 'wb') as target:
+                shutil.copyfileobj(source, target)
 
     def get_mod_languages(self, mod_path: str, mod_type: str):
         en_cfgs = []
@@ -268,25 +301,6 @@ class ModTranslator:
                         except Exception:
                             pass
         return zh_all
-
-    def move_to_recycle(self, path: str):
-        try:
-            subprocess.run(
-                ['powershell', '-Command', f'Remove-Item -Path "{path}" -Recycle -Force'],
-                check=True,
-                capture_output=True,
-                encoding='gbk'
-            )
-            self.log(f"已移动原文件到回收站: {path}")
-        except Exception as e:
-            self.log(f"移动到回收站失败: {e}，将直接删除", "WARN")
-            try:
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                else:
-                    os.remove(path)
-            except Exception as rm_e:
-                self.log(f"删除失败: {rm_e}", "ERROR")
 
     # ========== 主要步骤 ==========
     def step_separate(self):
@@ -570,91 +584,125 @@ class ModTranslator:
                 self.log(f"已更新模组文件夹: {target_path}")
 
         else:  # zip
-            with tempfile.TemporaryDirectory() as temp_dir:
-                self.log("正在解压模组...")
-                with zipfile.ZipFile(target_path, 'r') as zf:
-                    zf.extractall(temp_dir)
+            staging_path = None
+            try:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    self.log("正在解压模组...")
+                    with zipfile.ZipFile(target_path, 'r') as zf:
+                        bad_member = zf.testzip()
+                        if bad_member:
+                            self.log(f"原模组 ZIP 已损坏，无法读取: {bad_member}", "ERROR")
+                            return False
+                        self.extract_zip_safely(zf, temp_dir)
 
-                zh_cn_dir = None
-                for root, dirs, files in os.walk(temp_dir):
-                    if os.path.basename(root) == 'zh-CN' and os.path.basename(os.path.dirname(root)) == 'locale':
-                        zh_cn_dir = root
-                        break
-                if not zh_cn_dir:
-                    root_folder = None
-                    for item in os.listdir(temp_dir):
-                        if os.path.isdir(os.path.join(temp_dir, item)):
-                            root_folder = item
-                            break
+                    root_folder = self.get_mod_root_folder(target_path, target_type)
                     if not root_folder:
                         self.log("无法确定模组根目录", "ERROR")
                         return False
-                    zh_cn_dir = os.path.join(temp_dir, root_folder, 'locale', 'zh-CN')
-                    os.makedirs(zh_cn_dir, exist_ok=True)
-                    self.log(f"创建 zh-CN 目录: {zh_cn_dir}")
-
-                self.log(f"zh-CN 目录: {zh_cn_dir}")
-
-                success_count = 0
-                for idx, filename in enumerate(translate_files, 1):
-                    if self.should_stop:
-                        self.log("用户中断操作", "WARN")
+                    root_path = os.path.join(temp_dir, root_folder)
+                    if not os.path.isdir(root_path):
+                        self.log(f"解压后找不到模组根目录: {root_folder}", "ERROR")
                         return False
 
-                    translate_path = os.path.join(OUTPUT_DIR_TRANSLATE, filename)
-                    target_file_path = os.path.join(zh_cn_dir, filename)
-                    self.log(f"[{idx}/{len(translate_files)}] 处理: {filename}")
-
-                    try:
-                        with open(translate_path, 'r', encoding='utf-8') as f:
-                            new_content = f.read()
-                        if os.path.exists(target_file_path):
-                            with open(target_file_path, 'r', encoding='utf-8') as f:
-                                existing_content = f.read()
-                            new_parsed = self.parse_cfg_text(new_content)
-                            merged_parsed = self.parse_cfg_text(existing_content)
-                            for sec, kvs in new_parsed.items():
-                                if sec not in merged_parsed:
-                                    merged_parsed[sec] = OrderedDict()
-                                merged_parsed[sec].update(kvs)
-                            final_content = self.serialize_cfg(merged_parsed)
-                        else:
-                            final_content = new_content
-                        with open(target_file_path, 'w', encoding='utf-8', newline='\n') as f:
-                            f.write(final_content)
-                        success_count += 1
-                        self.log(f"  [OK] 已{'更新' if os.path.exists(target_file_path) else '创建'}: {filename}")
-                    except Exception as e:
-                        self.log(f"  [ERROR] 处理失败: {e}", "ERROR")
-
-                self.log(f"合并完成，成功 {success_count}/{len(translate_files)}")
-
-                if success_count == 0:
-                    self.log("没有成功处理任何文件，不生成新模组", "WARN")
-                    return False
-
-                self.log("正在打包新模组...")
-                root_folder = None
-                for item in os.listdir(temp_dir):
-                    if os.path.isdir(os.path.join(temp_dir, item)):
-                        root_folder = item
-                        break
-                if not root_folder:
-                    self.log("无法确定根目录", "ERROR")
-                    return False
-
-                if os.path.exists(target_path):
-                    self.move_to_recycle(target_path)
-
-                with zipfile.ZipFile(target_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    root_path = os.path.join(temp_dir, root_folder)
+                    zh_cn_dir = None
                     for root, dirs, files in os.walk(root_path):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.relpath(file_path, temp_dir)
-                            zf.write(file_path, arcname)
+                        if (os.path.basename(root).casefold() == 'zh-cn' and
+                                os.path.basename(os.path.dirname(root)).casefold() == 'locale'):
+                            zh_cn_dir = root
+                            break
+                    if not zh_cn_dir:
+                        zh_cn_dir = os.path.join(root_path, 'locale', 'zh-CN')
+                        os.makedirs(zh_cn_dir, exist_ok=True)
+                        self.log(f"创建 zh-CN 目录: {zh_cn_dir}")
 
-                self.log(f"新模组已生成并替换原文件: {target_path}")
+                    self.log(f"zh-CN 目录: {zh_cn_dir}")
+
+                    success_count = 0
+                    for idx, filename in enumerate(translate_files, 1):
+                        if self.should_stop:
+                            self.log("用户中断操作", "WARN")
+                            return False
+
+                        translate_path = os.path.join(OUTPUT_DIR_TRANSLATE, filename)
+                        target_file_path = os.path.join(zh_cn_dir, filename)
+                        self.log(f"[{idx}/{len(translate_files)}] 处理: {filename}")
+
+                        try:
+                            with open(translate_path, 'r', encoding='utf-8') as f:
+                                new_content = f.read()
+                            if os.path.exists(target_file_path):
+                                with open(target_file_path, 'r', encoding='utf-8') as f:
+                                    existing_content = f.read()
+                                new_parsed = self.parse_cfg_text(new_content)
+                                merged_parsed = self.parse_cfg_text(existing_content)
+                                for sec, kvs in new_parsed.items():
+                                    if sec not in merged_parsed:
+                                        merged_parsed[sec] = OrderedDict()
+                                    merged_parsed[sec].update(kvs)
+                                final_content = self.serialize_cfg(merged_parsed)
+                            else:
+                                final_content = new_content
+                            with open(target_file_path, 'w', encoding='utf-8', newline='\n') as f:
+                                f.write(final_content)
+                            success_count += 1
+                            self.log(f"  [OK] 已处理: {filename}")
+                        except Exception as e:
+                            self.log(f"  [ERROR] 处理失败: {e}", "ERROR")
+
+                    self.log(f"合并完成，成功 {success_count}/{len(translate_files)}")
+
+                    if success_count == 0:
+                        self.log("没有成功处理任何文件，不生成新模组", "WARN")
+                        return False
+
+                    # Build and validate beside the original. The original ZIP
+                    # remains untouched until the complete replacement is ready.
+                    self.log("正在打包新模组...")
+                    target_dir = os.path.dirname(target_path) or '.'
+                    staging_fd, staging_path = tempfile.mkstemp(
+                        prefix=f".{os.path.basename(target_path)}.",
+                        suffix='.tmp',
+                        dir=target_dir
+                    )
+                    os.close(staging_fd)
+
+                    with zipfile.ZipFile(staging_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        # Walk the whole extracted tree. Packing only root_folder
+                        # silently dropped files stored beside it in some mods.
+                        for root, dirs, files in os.walk(temp_dir):
+                            for directory in dirs:
+                                directory_path = os.path.join(root, directory)
+                                arcname = os.path.relpath(
+                                    directory_path, temp_dir
+                                ).replace(os.sep, '/') + '/'
+                                # Keep explicit empty-directory entries such as
+                                # panglia_planet/sounds/.
+                                zf.writestr(arcname, b'')
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                arcname = os.path.relpath(
+                                    file_path, temp_dir
+                                ).replace(os.sep, '/')
+                                zf.write(file_path, arcname)
+
+                    with zipfile.ZipFile(staging_path, 'r') as zf:
+                        bad_member = zf.testzip()
+                        if bad_member:
+                            raise zipfile.BadZipFile(
+                                f"生成的 ZIP 校验失败: {bad_member}"
+                            )
+
+                    os.replace(staging_path, target_path)
+                    staging_path = None
+                    self.log(f"新模组已生成并原子替换原文件: {target_path}")
+            except Exception as e:
+                if staging_path and os.path.exists(staging_path):
+                    try:
+                        os.remove(staging_path)
+                    except OSError as cleanup_error:
+                        self.log(f"清理临时 ZIP 失败: {cleanup_error}", "WARN")
+                self.log(f"替换 ZIP 失败，原模组未修改: {e}", "ERROR")
+                return False
 
         self.set_progress(100, "全部完成")
         return True

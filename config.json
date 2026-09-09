@@ -1,13 +1,13 @@
 {
     "MODS_DIR": "C:\\Users\\Administrator\\AppData\\Roaming\\Factorio\\mods",
-    "TARGET_MOD_NAME": "zzzz-beomyo-fix",
+    "TARGET_MOD_NAME": "panglia_planet",
     "EXTRA_CFG_NAMES": [
         "beomyo",
         "beomyofix",
         "beomyo_mod_info"
     ],
     "OPENAI_BASE_URL": "https://llm-ijcj80e06g322wkn.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    "OPENAI_API_KEY": "sk-a10c3a06bb64666666666",
+    "OPENAI_API_KEY": "sk-a10c3a06bb644fbea7",
     "MODEL": "qwen3.7-flash-2026-07-15",
     "TRANSLATION_MAP": [
         [
